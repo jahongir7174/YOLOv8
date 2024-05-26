@@ -413,10 +413,8 @@ class Assigner(torch.nn.Module):
 
         if num_max_boxes == 0:
             device = gt_bboxes.device
-            return (torch.full_like(pd_scores[..., 0], self.nc).to(device),
-                    torch.zeros_like(pd_bboxes).to(device),
+            return (torch.zeros_like(pd_bboxes).to(device),
                     torch.zeros_like(pd_scores).to(device),
-                    torch.zeros_like(pd_scores[..., 0]).to(device),
                     torch.zeros_like(pd_scores[..., 0]).to(device))
 
         num_anchors = anc_points.shape[0]
