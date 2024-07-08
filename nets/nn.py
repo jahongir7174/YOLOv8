@@ -26,9 +26,9 @@ def fuse_conv(conv, norm):
 
 
 class Conv(torch.nn.Module):
-    def __init__(self, in_ch, out_ch, k=1, s=1, p=0):
+    def __init__(self, in_ch, out_ch, k=1, s=1, p=0, g=1):
         super().__init__()
-        self.conv = torch.nn.Conv2d(in_ch, out_ch, k, s, p, bias=False)
+        self.conv = torch.nn.Conv2d(in_ch, out_ch, k, s, p, groups=g, bias=False)
         self.norm = torch.nn.BatchNorm2d(out_ch, eps=0.001, momentum=0.03)
         self.relu = torch.nn.SiLU(inplace=True)
 
@@ -188,7 +188,7 @@ class Head(torch.nn.Module):
         for box, cls, s in zip(self.box, self.cls, self.stride):
             # box
             box[-1].bias.data[:] = 1.0
-            # cls (.01 objects, 80 classes, 640 img)
+            # cls (.01 objects, 80 classes, 640 image)
             cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (640 / s) ** 2)
 
 

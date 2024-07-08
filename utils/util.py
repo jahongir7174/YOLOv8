@@ -54,7 +54,7 @@ def export_onnx(args):
     x = torch.zeros((1, 3, args.input_size, args.input_size))
 
     torch.onnx.export(m.cpu(), x.cpu(),
-                      './weights/best.onnx',
+                      f='./weights/best.onnx',
                       verbose=False,
                       opset_version=12,
                       # WARNING: DNN inference with torch>=1.12 may require do_constant_folding=False
@@ -101,7 +101,7 @@ def compute_metric(output, target, iou_v):
     (b1, b2) = output[:, :4].unsqueeze(0).chunk(2, 2)
     intersection = (torch.min(a2, b2) - torch.max(a1, b1)).clamp(0).prod(2)
     # IoU = intersection / (area1 + area2 - intersection)
-    iou = intersection / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - intersection + 1e-7)
+    iou = intersection / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - intersection + 1E-7)
 
     correct = numpy.zeros((output.shape[0], iou_v.shape[0]))
     correct = correct.astype(bool)
@@ -109,8 +109,8 @@ def compute_metric(output, target, iou_v):
         # IoU > threshold and classes match
         x = torch.where((iou >= iou_v[i]) & (target[:, 0:1] == output[:, 5]))
         if x[0].shape[0]:
-            matches = torch.cat((torch.stack(x, 1),
-                                 iou[x[0], x[1]][:, None]), 1).cpu().numpy()  # [label, detect, iou]
+            matches = (torch.stack(x, dim=1), iou[x[0], x[1]][:, None])
+            matches = torch.cat(matches, dim=1).cpu().numpy()  # [label, detect, iou]
             if x[0].shape[0] > 1:
                 matches = matches[matches[:, 2].argsort()[::-1]]
                 matches = matches[numpy.unique(matches[:, 1], return_index=True)[1]]
@@ -119,7 +119,7 @@ def compute_metric(output, target, iou_v):
     return torch.tensor(correct, dtype=torch.bool, device=output.device)
 
 
-def non_max_suppression(outputs, confidence_threshold, iou_threshold):
+def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.7):
     max_wh = 7680
     max_det = 300
     max_nms = 30000
@@ -176,7 +176,30 @@ def smooth(y, f=0.05):
     return numpy.convolve(yp, numpy.ones(nf) / nf, mode='valid')  # y-smoothed
 
 
-def compute_ap(tp, conf, pred_cls, target_cls, eps=1e-16):
+def plot_curve(px, py, names, save_dir, x_label="Confidence", y_label="Metric"):
+    from matplotlib import pyplot
+
+    figure, ax = pyplot.subplots(1, 1, figsize=(9, 6), tight_layout=True)
+
+    if 0 < len(names) < 21:  # display per-class legend if < 21 classes
+        for i, y in enumerate(py):
+            ax.plot(px, y, linewidth=1, label=f"{names[i]}")  # plot(confidence, metric)
+    else:
+        ax.plot(px, py.T, linewidth=1, color="grey")  # plot(confidence, metric)
+
+    y = smooth(py.mean(0), 0.05)
+    ax.plot(px, y, linewidth=3, color="blue", label=f"all classes {y.max():.2f} at {px[y.argmax()]:.3f}")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+    ax.set_title(f"{y_label}-Confidence Curve")
+    figure.savefig(save_dir, dpi=250)
+    pyplot.close(figure)
+
+
+def compute_ap(tp, conf, pred_cls, target_cls, plot=False, names=(), eps=1E-16):
     """
     Compute the average precision, given the recall and precision curves.
     Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
@@ -235,7 +258,10 @@ def compute_ap(tp, conf, pred_cls, target_cls, eps=1e-16):
 
     # Compute F1 (harmonic mean of precision and recall)
     f1 = 2 * p * r / (p + r + eps)
-
+    if plot:
+        names = dict(enumerate(names))  # to dict
+        names = [v for k, v in names.items() if k in unique_classes]  # list: only classes that have data
+        plot_curve(px, f1, names, save_dir="./weights/F1_curve.png", y_label="F1")
     i = smooth(f1.mean(0), 0.1).argmax()  # max F1 index
     p, r, f1 = p[:, i], r[:, i], f1[:, i]
     tp = (r * nt).round()  # true positives
@@ -288,9 +314,11 @@ def clip_gradients(model, max_norm=10.0):
     torch.nn.utils.clip_grad_norm_(parameters, max_norm=max_norm)
 
 
-def load_weight(ckpt, model):
+def load_weight(model, ckpt):
     dst = model.state_dict()
-    src = torch.load(ckpt, 'cpu')['model'].float().state_dict()
+    src = torch.load(ckpt, map_location='cpu')
+    src = src['model'].float().state_dict()
+
     ckpt = {}
     for k, v in src.items():
         if k in dst and v.shape == dst[k].shape:
@@ -299,16 +327,18 @@ def load_weight(ckpt, model):
     return model
 
 
-def weight_decay(model, decay):
+def set_params(model, decay):
     p1 = []
     p2 = []
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if len(param.shape) == 1 or name.endswith(".bias"):
-            p1.append(param)
-        else:
-            p2.append(param)
+    norm = tuple(v for k, v in torch.nn.__dict__.items() if "Norm" in k)
+    for m in model.modules():
+        for n, p in m.named_parameters(recurse=0):
+            if n == "bias":  # bias (no decay)
+                p1.append(p)
+            elif n == "weight" and isinstance(m, norm):  # weight (no decay)
+                p1.append(p)
+            else:
+                p2.append(p)  # weight (with decay)
     return [{'params': p1, 'weight_decay': 0.00},
             {'params': p2, 'weight_decay': decay}]
 

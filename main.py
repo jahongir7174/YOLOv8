@@ -25,7 +25,7 @@ def train(args, params):
     accumulate = max(round(64 / (args.batch_size * args.world_size)), 1)
     params['weight_decay'] *= args.batch_size * args.world_size * accumulate / 64
 
-    optimizer = torch.optim.SGD(util.weight_decay(model, params['weight_decay']),
+    optimizer = torch.optim.SGD(util.set_params(model, params['weight_decay']),
                                 params['min_lr'], params['momentum'], nesterov=True)
 
     # EMA
@@ -34,11 +34,11 @@ def train(args, params):
     filenames = []
     with open('../Dataset/COCO/train2017.txt') as reader:
         for filename in reader.readlines():
-            filename = filename.rstrip().split('/')[-1]
+            filename = os.path.basename(filename.rstrip())
             filenames.append('../Dataset/COCO/images/train2017/' + filename)
 
     sampler = None
-    dataset = Dataset(filenames, args.input_size, params, True)
+    dataset = Dataset(filenames, args.input_size, params, augment=True)
 
     if args.distributed:
         sampler = data.distributed.DistributedSampler(dataset)
@@ -164,39 +164,41 @@ def test(args, params, model=None):
     filenames = []
     with open('../Dataset/COCO/val2017.txt') as reader:
         for filename in reader.readlines():
-            filename = filename.rstrip().split('/')[-1]
+            filename = os.path.basename(filename.rstrip())
             filenames.append('../Dataset/COCO/images/val2017/' + filename)
 
     dataset = Dataset(filenames, args.input_size, params, augment=False)
     loader = data.DataLoader(dataset, batch_size=4, shuffle=False, num_workers=4,
                              pin_memory=True, collate_fn=Dataset.collate_fn)
-
+    plot = False
     if model is None:
-        model = torch.load('./weights/best.pt', map_location='cuda')['model'].float()
+        plot = True
+        model = torch.load(f='./weights/best.pt', map_location='cuda')
+        model = model['model'].float().fuse()
 
     model.half()
     model.eval()
 
     # Configure
-    iou_v = torch.linspace(0.5, 0.95, 10).cuda()  # iou vector for mAP@0.5:0.95
+    iou_v = torch.linspace(start=0.5, end=0.95, steps=10).cuda()  # iou vector for mAP@0.5:0.95
     n_iou = iou_v.numel()
 
-    m_pre = 0.
-    m_rec = 0.
-    map50 = 0.
-    mean_ap = 0.
+    m_pre = 0
+    m_rec = 0
+    map50 = 0
+    mean_ap = 0
     metrics = []
     p_bar = tqdm.tqdm(loader, desc=('%10s' * 4) % ('precision', 'recall', 'mAP50', 'mAP'))
     for samples, targets in p_bar:
         samples = samples.cuda()
         samples = samples.half()  # uint8 to fp16/32
         samples = samples / 255.  # 0 - 255 to 0.0 - 1.0
-        _, _, h, w = samples.shape  # batch size, channels, height, width
+        _, _, h, w = samples.shape  # batch-size, channels, height, width
         scale = torch.tensor((w, h, w, h)).cuda()
         # Inference
         outputs = model(samples)
         # NMS
-        outputs = util.non_max_suppression(outputs, 0.001, 0.7)
+        outputs = util.non_max_suppression(outputs)
         # Metrics
         for i, output in enumerate(outputs):
             idx = targets['idx'] == i
@@ -214,15 +216,15 @@ def test(args, params, model=None):
                 continue
             # Evaluate
             if cls.shape[0]:
-                target = torch.cat((cls, util.wh2xy(box) * scale), 1)
+                target = torch.cat(tensors=(cls, util.wh2xy(box) * scale), dim=1)
                 metric = util.compute_metric(output[:, :6], target, iou_v)
             # Append
             metrics.append((metric, output[:, 4], output[:, 5], cls.squeeze(-1)))
 
     # Compute metrics
-    metrics = [torch.cat(x, 0).cpu().numpy() for x in zip(*metrics)]  # to numpy
+    metrics = [torch.cat(x, dim=0).cpu().numpy() for x in zip(*metrics)]  # to numpy
     if len(metrics) and metrics[0].any():
-        tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics)
+        tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*metrics, plot=plot, names=params['names'])
     # Print results
     print('%10.3g' * 4 % (m_pre, m_rec, map50, mean_ap))
     # Return results
@@ -251,6 +253,7 @@ def main():
     parser = ArgumentParser()
     parser.add_argument('--input-size', default=640, type=int)
     parser.add_argument('--batch-size', default=32, type=int)
+    parser.add_argument('--local-rank', default=0, type=int)
     parser.add_argument('--local_rank', default=0, type=int)
     parser.add_argument('--epochs', default=500, type=int)
     parser.add_argument('--train', action='store_true')

@@ -108,7 +108,7 @@ class Dataset(data.Dataset):
     def load_mosaic(self, index, params):
         label4 = []
         border = [-self.input_size // 2, -self.input_size // 2]
-        image4 = numpy.full((self.input_size * 2, self.input_size * 2, 3), 0, dtype=numpy.uint8)
+        image4 = numpy.full(shape=(self.input_size * 2, self.input_size * 2, 3), fill_value=0, dtype=numpy.uint8)
         y1a, y2a, x1a, x2a, y1b, y2b, x1b, x2b = (None, None, None, None, None, None, None, None)
 
         xc = int(random.uniform(-border[0], 2 * self.input_size + border[1]))
@@ -182,18 +182,18 @@ class Dataset(data.Dataset):
     def collate_fn(batch):
         samples, cls, box, indices = zip(*batch)
 
-        cls = torch.cat(cls, 0)
-        box = torch.cat(box, 0)
+        cls = torch.cat(cls, dim=0)
+        box = torch.cat(box, dim=0)
 
         new_indices = list(indices)
         for i in range(len(indices)):
             new_indices[i] += i
-        indices = torch.cat(new_indices, 0)
+        indices = torch.cat(new_indices, dim=0)
 
         targets = {'cls': cls,
                    'box': box,
                    'idx': indices}
-        return torch.stack(samples, 0), targets
+        return torch.stack(samples, dim=0), targets
 
     @staticmethod
     def load_label(filenames):
@@ -285,8 +285,8 @@ def augment_hsv(image, params):
 
     x = numpy.arange(0, 256, dtype=r.dtype)
     lut_h = ((x * r[0]) % 180).astype('uint8')
-    lut_s = numpy.clip(x * r[1], 0, 255).astype('uint8')
-    lut_v = numpy.clip(x * r[2], 0, 255).astype('uint8')
+    lut_s = numpy.clip(x * r[1], a_min=0, a_max=255).astype('uint8')
+    lut_v = numpy.clip(x * r[2], a_min=0, a_max=255).astype('uint8')
 
     hsv = cv2.merge((cv2.LUT(h, lut_h), cv2.LUT(s, lut_s), cv2.LUT(v, lut_v)))
     cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR, dst=image)  # no return needed
@@ -354,7 +354,7 @@ def random_perspective(image, label, params, border=(0, 0)):
 
     # Combined rotation matrix, order of operations (right to left) is IMPORTANT
     matrix = translate @ shear @ rotate @ perspective @ center
-    if (border[0] != 0) or (border[1] != 0) or (matrix != numpy.eye(3)).any():  # image changed
+    if (border[0] != 0) or (border[1] != 0) or numpy.any((matrix != numpy.eye(3))):  # image changed
         image = cv2.warpAffine(image, matrix[:2], dsize=(w, h), borderValue=(0, 0, 0))
 
     # Transform label coordinates
