@@ -15,6 +15,8 @@ from utils.dataset import Dataset
 
 warnings.filterwarnings("ignore")
 
+data_dir = '../Dataset/COCO'
+
 
 def train(args, params):
     # Model
@@ -32,10 +34,10 @@ def train(args, params):
     ema = util.EMA(model) if args.local_rank == 0 else None
 
     filenames = []
-    with open('../Dataset/COCO/train2017.txt') as reader:
-        for filename in reader.readlines():
+    with open(f'{data_dir}/train2017.txt') as f:
+        for filename in f.readlines():
             filename = os.path.basename(filename.rstrip())
-            filenames.append('../Dataset/COCO/images/train2017/' + filename)
+            filenames.append(f'{data_dir}/images/train2017/' + filename)
 
     sampler = None
     dataset = Dataset(filenames, args.input_size, params, augment=True)
@@ -162,10 +164,10 @@ def train(args, params):
 @torch.no_grad()
 def test(args, params, model=None):
     filenames = []
-    with open('../Dataset/COCO/val2017.txt') as reader:
+    with open(f'{data_dir}/val2017.txt') as reader:
         for filename in reader.readlines():
             filename = os.path.basename(filename.rstrip())
-            filenames.append('../Dataset/COCO/images/val2017/' + filename)
+            filenames.append(f'{data_dir}/images/val2017/' + filename)
 
     dataset = Dataset(filenames, args.input_size, params, augment=False)
     loader = data.DataLoader(dataset, batch_size=4, shuffle=False, num_workers=4,
